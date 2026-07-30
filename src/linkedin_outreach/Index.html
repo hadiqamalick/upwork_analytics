@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <base target="_top">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700&display=swap" rel="stylesheet">
+  <?!= include('css'); ?>
+</head>
+<body>
+
+  <div class="topbar">
+    <div>
+      <h1>LinkedIn Outreach Dashboard</h1>
+      <div class="meta" id="meta">Loading…</div>
+    </div>
+    <button class="refresh" id="refreshBtn">Refresh data</button>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Performance by Profile</h2>
+      <div id="profileTable"></div>
+    </div>
+    <div class="panel">
+      <h2>Replies by Type</h2>
+      <div id="replyTable"></div>
+      <div class="note">Not tagged = has a first reply date but reply_status is blank or "No Reply".</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Leads Sourced by BD</h2>
+      <div id="bdTable"></div>
+    </div>
+    <div class="panel">
+      <h2>Weekly Lead Intake</h2>
+      <div id="weeklyBars"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>BD Activity by Date</h2>
+    <div>
+      <span class="seg" id="segMetric"></span>
+      <span class="seg" id="segGran"></span>
+    </div>
+    <div id="chart"></div>
+    <div class="chips" id="bdChips"></div>
+  </div>
+
+  <div id="toast"></div>
+
+  <?!= include('JavaScript'); ?>
+</body>
+</html>
