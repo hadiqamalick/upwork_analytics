@@ -1,0 +1,773 @@
+<script>
+    var DATA = [];
+    var MANAGER_MAP = { 'Haris Sohail': 'Haider Sami', 'Nidal Cheema': 'Muazz Nadeem' };
+    var BD_COLORS = ['#4c8dff','#2fbf71','#e8a13c','#e05d8f','#33c2c2','#a06ff0','#f0d05a','#7bd45e'];
+    var PRESETS = [
+      { id: 'thisWeek', label: 'This week' },
+      { id: 'lastWeek', label: 'Last week' },
+      { id: 'last7', label: 'Last 7 days' },
+      { id: 'today', label: 'Today' },
+      { id: 'thisMonth', label: 'This month' },
+      { id: 'lastMonth', label: 'Last month' },
+      { id: 'all', label: 'All time' }
+    ];
+    var PAGE_SIZE = 10;
+    var state = {
+      tab: 'daily',
+      metric: 'request', gran: 'daily', bdOn: {},
+      from: '', to: '', preset: 'all',
+      draftFrom: '', draftTo: '',
+      calView: null,
+      list: { rows: [], page: 0, mode: 'qualified', title: '' }
+    };
+
+    // ---------- utils ----------
+    function fmt(n){ return n.toLocaleString('en-US'); }
+    function pct(a,b){ return b ? Math.round(a/b*100) + '%' : '\u2014'; }
+    function parseD(s){ var p = s.split('-'); return new Date(+p[0], +p[1]-1, +p[2]); }
+    function iso(d){
+      return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    }
+    function todayIso(){ return iso(new Date()); }
+    function addDays(dateStr, n){
+      var d = parseD(dateStr);
+      d.setDate(d.getDate() + n);
+      return iso(d);
+    }
+    function weekStart(s){
+      var d = parseD(s);
+      d.setDate(d.getDate() - ((d.getDay()+6)%7));
+      return iso(d);
+    }
+    var MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    function shortD(s){ var d=parseD(s); return MONTHS[d.getMonth()]+' '+d.getDate()+', '+d.getFullYear(); }
+    function longD(s){ return shortD(s); }
+    function axisD(s){ var d=parseD(s); return MO[d.getMonth()]+' '+d.getDate(); }
+    function pillHTML(num, den){
+      if(!den) return '<span class="pill x">\u2014</span>';
+      var r = num/den*100;
+      var cls = r > 30 ? 'g' : (r >= 10 ? 'a' : 'r');
+      return '<span class="pill '+cls+'">'+Math.round(r)+'%</span>';
+    }
+    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function toast(msg, isErr){
+      var t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'show' + (isErr ? ' err' : '');
+      setTimeout(function(){ t.className=''; }, 3000);
+    }
+    function replyType(r){
+      if(!r.reply_status || r.reply_status === 'No Reply') return 'Not tagged';
+      return r.reply_status;
+    }
+
+    // ---------- date range ----------
+    function collectDates(rows){
+      var out = [];
+      rows.forEach(function(r){
+        ['date_added','request_sent_date','accepted_date','first_message_date','first_reply_date'].forEach(function(c){
+          if(r[c]) out.push(r[c]);
+        });
+      });
+      return out.sort();
+    }
+    function presetRange(key, rows){
+      var today = todayIso();
+      var all = collectDates(rows);
+      var minD = all.length ? all[0] : today;
+      var maxD = all.length ? all[all.length-1] : today;
+      if(maxD < today) maxD = today;
+      if(key === 'all') return { from: minD, to: maxD };
+      if(key === 'today') return { from: today, to: today };
+      if(key === 'last7') return { from: addDays(today, -6), to: today };
+      if(key === 'thisWeek') return { from: weekStart(today), to: today };
+      if(key === 'lastWeek'){
+        var thisMon = weekStart(today);
+        return { from: addDays(thisMon, -7), to: addDays(thisMon, -1) };
+      }
+      if(key === 'thisMonth'){
+        var d = parseD(today);
+        return { from: iso(new Date(d.getFullYear(), d.getMonth(), 1)), to: today };
+      }
+      if(key === 'lastMonth'){
+        var d2 = parseD(today);
+        return { from: iso(new Date(d2.getFullYear(), d2.getMonth()-1, 1)), to: iso(new Date(d2.getFullYear(), d2.getMonth(), 0)) };
+      }
+      return { from: state.from || minD, to: state.to || maxD };
+    }
+    function inRange(dateStr){
+      if(!dateStr) return false;
+      if(state.from && dateStr < state.from) return false;
+      if(state.to && dateStr > state.to) return false;
+      return true;
+    }
+    function inCohort(r){ return inRange(r.date_added); }
+    function hasEvent(dateStr){ return !!dateStr; }
+
+    function isDailyQualified(r){ return r.status === 'Qualified' && inRange(r.first_reply_date); }
+    function isCohortQualified(r){ return inCohort(r) && r.status === 'Qualified' && hasEvent(r.first_reply_date); }
+
+    function countSent(r){
+      return state.tab === 'daily' ? inRange(r.request_sent_date) : (inCohort(r) && hasEvent(r.request_sent_date));
+    }
+    function countAcc(r){
+      return state.tab === 'daily' ? inRange(r.accepted_date) : (inCohort(r) && hasEvent(r.accepted_date));
+    }
+    function countMsg(r){
+      return state.tab === 'daily' ? inRange(r.first_message_date) : (inCohort(r) && hasEvent(r.first_message_date));
+    }
+    function countRep(r){
+      return state.tab === 'daily' ? inRange(r.first_reply_date) : (inCohort(r) && hasEvent(r.first_reply_date));
+    }
+    function countQual(r){
+      return state.tab === 'daily' ? isDailyQualified(r) : isCohortQualified(r);
+    }
+    function countLeadRow(r){
+      return state.tab === 'daily' ? true : inCohort(r);
+    }
+    function repliedRows(){
+      return DATA.filter(function(r){
+        return state.tab === 'daily' ? inRange(r.first_reply_date) : (inCohort(r) && hasEvent(r.first_reply_date));
+      });
+    }
+
+    function presetLabel(){
+      for(var i=0;i<PRESETS.length;i++) if(PRESETS[i].id === state.preset) return PRESETS[i].label;
+      return 'Custom';
+    }
+    function dateBtnLabel(){
+      if(state.preset !== 'all' && state.preset !== 'custom' && state.preset){
+        for(var i=0;i<PRESETS.length;i++) if(PRESETS[i].id === state.preset) return PRESETS[i].label;
+      }
+      if(state.from && state.to){
+        if(state.preset === 'all') return 'All time';
+        return shortD(state.from) + '\u2013' + shortD(state.to);
+      }
+      return presetLabel();
+    }
+    function updateDateBtn(){
+      document.getElementById('dateBtn').textContent = dateBtnLabel();
+    }
+    function updateTabNote(){
+      document.getElementById('tabNote').textContent = state.tab === 'daily'
+        ? 'Each activity metric uses its own date in the selected range. Total Leads stays all-time.'
+        : 'Cohorted view is a work in progress.';
+    }
+    function updateTabVisibility(){
+      var isDaily = state.tab === 'daily';
+      document.getElementById('sectionShared').hidden = !isDaily;
+      document.getElementById('sectionDaily').hidden = !isDaily;
+      document.getElementById('sectionCohort').hidden = isDaily;
+      document.querySelectorAll('#tabs .tab').forEach(function(b){
+        b.className = 'tab' + (b.getAttribute('data-tab') === state.tab ? ' on' : '');
+      });
+      updateTabNote();
+    }
+
+    function monthStart(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
+    function addMonths(d, n){ return new Date(d.getFullYear(), d.getMonth() + n, 1); }
+    function ensureCalView(){
+      if(!state.calView){
+        var base = state.draftTo || state.to || todayIso();
+        var d = parseD(base);
+        state.calView = monthStart(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+      }
+    }
+    function inDraftRange(dateStr){
+      var a = state.draftFrom, b = state.draftTo;
+      if(!a) return false;
+      if(!b) return dateStr === a;
+      var lo = a < b ? a : b, hi = a < b ? b : a;
+      return dateStr >= lo && dateStr <= hi;
+    }
+    function isDraftEndpoint(dateStr){
+      return dateStr === state.draftFrom || dateStr === state.draftTo;
+    }
+    function renderMonthGrid(container, viewDate){
+      var y = viewDate.getFullYear(), m = viewDate.getMonth();
+      var title = MO[m] + ' ' + y;
+      var firstDow = (new Date(y, m, 1).getDay() + 6) % 7; // Monday=0
+      var daysInMonth = new Date(y, m + 1, 0).getDate();
+      var html = '<div class="date-cal-title">'+title+'</div><div class="date-cal-grid">';
+      var dows = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+      dows.forEach(function(d){ html += '<div class="date-cal-dow">'+d+'</div>'; });
+      for(var i=0;i<firstDow;i++) html += '<div></div>';
+      for(var day=1; day<=daysInMonth; day++){
+        var ds = iso(new Date(y, m, day));
+        var cls = 'date-cal-day';
+        if(inDraftRange(ds)) cls += ' in-range';
+        if(isDraftEndpoint(ds)) cls += ' endpoint';
+        html += '<button type="button" class="'+cls+'" data-date="'+ds+'">'+day+'</button>';
+      }
+      html += '</div>';
+      container.innerHTML = html;
+      container.querySelectorAll('.date-cal-day').forEach(function(btn){
+        btn.onclick = function(e){
+          e.stopPropagation();
+          onCalDayClick(btn.getAttribute('data-date'));
+        };
+      });
+    }
+    function renderCalendars(){
+      ensureCalView();
+      renderMonthGrid(document.getElementById('calLeft'), state.calView);
+      renderMonthGrid(document.getElementById('calRight'), addMonths(state.calView, 1));
+    }
+    function onCalDayClick(ds){
+      if(!state.draftFrom || (state.draftFrom && state.draftTo)){
+        state.draftFrom = ds;
+        state.draftTo = '';
+        state.preset = 'custom';
+      } else {
+        state.draftTo = ds;
+        if(state.draftTo < state.draftFrom){
+          var tmp = state.draftFrom; state.draftFrom = state.draftTo; state.draftTo = tmp;
+        }
+        state.preset = 'custom';
+      }
+      renderDatePresets();
+      renderCalendars();
+    }
+    function renderDatePresets(){
+      var active = state.preset;
+      document.getElementById('datePresets').innerHTML = PRESETS.map(function(p){
+        return '<button type="button" data-preset="'+p.id+'" class="'+(active===p.id?'on':'')+'">'+p.label+'</button>';
+      }).join('');
+      document.querySelectorAll('#datePresets button').forEach(function(b){
+        b.onclick = function(e){
+          e.stopPropagation();
+          applyPreset(b.getAttribute('data-preset'));
+        };
+      });
+    }
+    function applyPreset(key){
+      var range = presetRange(key, DATA);
+      state.preset = key;
+      state.from = range.from;
+      state.to = range.to;
+      state.draftFrom = range.from;
+      state.draftTo = range.to;
+      closeDatePopover();
+      updateDateBtn();
+      renderAll();
+    }
+    function openDatePopover(){
+      state.draftFrom = state.from;
+      state.draftTo = state.to;
+      var base = state.to || todayIso();
+      var d = parseD(base);
+      state.calView = monthStart(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+      document.getElementById('datePopover').hidden = false;
+      document.getElementById('dateBtn').setAttribute('aria-expanded', 'true');
+      renderDatePresets();
+      renderCalendars();
+    }
+    function closeDatePopover(){
+      document.getElementById('datePopover').hidden = true;
+      document.getElementById('dateBtn').setAttribute('aria-expanded', 'false');
+    }
+    function applyDraftRange(){
+      if(!state.draftFrom || !state.draftTo){
+        toast('Select a start and end date', true);
+        return;
+      }
+      var from = state.draftFrom, to = state.draftTo;
+      if(from > to){ var t = from; from = to; to = t; }
+      state.from = from;
+      state.to = to;
+      state.preset = 'custom';
+      closeDatePopover();
+      updateDateBtn();
+      renderAll();
+    }
+    function clearDateRange(){
+      applyPreset('all');
+    }
+
+    // ---------- data load ----------
+    function loadData(fromButton){
+      var btn = document.getElementById('refreshBtn');
+      btn.disabled = true; btn.textContent = 'Refreshing\u2026';
+      google.script.run
+        .withSuccessHandler(function(res){
+          DATA = res.rows;
+          res.rows.forEach(function(r){
+            if(r.bd_name && !(r.bd_name in state.bdOn)) state.bdOn[r.bd_name] = true;
+          });
+          if(state.preset !== 'custom'){
+            var range = presetRange(state.preset, DATA);
+            state.from = range.from;
+            state.to = range.to;
+          }
+          updateDateBtn();
+          renderAll();
+          btn.disabled = false; btn.textContent = 'Refresh data';
+          if(fromButton) toast('Data refreshed');
+        })
+        .withFailureHandler(function(err){
+          btn.disabled = false; btn.textContent = 'Refresh data';
+          toast('Failed to load data: ' + err.message, true);
+        })
+        .getLeads();
+    }
+
+    // ---------- renders ----------
+    function renderAll(){
+      updateTabVisibility();
+      if(state.tab !== 'daily') return;
+      renderKPIs(); renderProfiles(); renderReplies();
+      renderBD(); renderWeekly();
+      renderChartControls(); renderChart();
+    }
+
+    function renderKPIs(){
+      var totalLeads = state.tab === 'daily'
+        ? DATA.length
+        : DATA.filter(inCohort).length;
+      var sent = DATA.filter(countSent).length;
+      var acc = DATA.filter(countAcc).length;
+      var msg = DATA.filter(countMsg).length;
+      var rep = DATA.filter(countRep).length;
+      var qual = DATA.filter(countQual).length;
+      var cards = [
+        [state.tab === 'daily' ? 'Total Leads' : 'Cohort Leads', fmt(totalLeads), '', ''],
+        ['Requests Sent', fmt(sent), '', 'c2'],
+        ['Accepted', fmt(acc), 'request accept rate ' + pct(acc, sent), 'c3'],
+        ['Messaged', fmt(msg), '', 'c4'],
+        ['Replied', fmt(rep), 'reply rate ' + pct(rep, msg), 'c5'],
+        ['Qualified', fmt(qual), '', 'c6']
+      ];
+      document.getElementById('kpis').innerHTML = cards.map(function(c){
+        return '<div class="kpi'+(c[3]?' '+c[3]:'')+'"><div class="label">'+c[0]+'</div><div class="num">'+c[1]+'</div>'
+          + (c[2] ? '<div class="sub rate">'+c[2]+'</div>' : '') + '</div>';
+      }).join('');
+    }
+
+    function renderProfiles(){
+      var g = {};
+      DATA.forEach(function(r){
+        var k = r.profile_used || 'Unassigned';
+        if(!g[k]) g[k] = {leads:0, sent:0, acc:0, msg:0, rep:0, qual:0};
+        var o = g[k];
+        if(countLeadRow(r)) o.leads++;
+        if(countSent(r)) o.sent++;
+        if(countAcc(r)) o.acc++;
+        if(countMsg(r)) o.msg++;
+        if(countRep(r)) o.rep++;
+        if(countQual(r)) o.qual++;
+      });
+      var keys = Object.keys(g).filter(function(k){ return k !== 'Unassigned'; })
+        .sort(function(a,b){ return g[b].leads - g[a].leads; });
+      if(g['Unassigned'] && g['Unassigned'].leads) keys.push('Unassigned');
+
+      var html = '<table><thead><tr><th>Profile</th><th class="num">Leads</th><th class="num">Request Sent</th>'
+        + '<th class="num">Accepted</th><th class="num">Messaged</th><th class="num">Reply</th>'
+        + '<th class="num">Qualified</th>'
+        + '<th class="num">Accept Rate</th><th class="num">Reply Rate</th></tr></thead><tbody>';
+      var tot = { leads:0, sent:0, acc:0, msg:0, rep:0, qual:0 };
+      keys.forEach(function(k){
+        var o = g[k], un = (k === 'Unassigned');
+        tot.leads += o.leads; tot.sent += o.sent; tot.acc += o.acc;
+        tot.msg += o.msg; tot.rep += o.rep; tot.qual += o.qual;
+        var mgr = MANAGER_MAP[k] ? '<span class="mgr">managed by ' + esc(MANAGER_MAP[k]) + '</span>' : '';
+        var nameCell = un
+          ? 'Unassigned<span class="mgr">identified, not yet contacted</span>'
+          : esc(k) + mgr;
+        var lowVol = (!un && o.msg > 0 && o.msg < 20) ? '<span class="flag">low volume ('+o.msg+' msgs)</span>' : '';
+        html += '<tr' + (un ? ' class="unassigned"' : '') + '><td>' + nameCell + '</td>'
+          + '<td class="num">'+metricLink('leads', k, o.leads)+'</td>'
+          + '<td class="num">'+metricLink('sent', k, o.sent)+'</td>'
+          + '<td class="num">'+metricLink('acc', k, o.acc)+'</td>'
+          + '<td class="num">'+metricLink('msg', k, o.msg)+'</td>'
+          + '<td class="num">'+metricLink('rep', k, o.rep)+'</td>'
+          + '<td class="num">'+metricLink('qual', k, o.qual)+'</td>'
+          + '<td class="num">'+pillHTML(o.acc, o.sent)+'</td>'
+          + '<td class="num">'+pillHTML(o.rep, o.msg)+lowVol+'</td></tr>';
+      });
+      html += '<tr class="total"><td>Total</td>'
+        + '<td class="num">'+metricLink('leads', '__all__', tot.leads)+'</td>'
+        + '<td class="num">'+metricLink('sent', '__all__', tot.sent)+'</td>'
+        + '<td class="num">'+metricLink('acc', '__all__', tot.acc)+'</td>'
+        + '<td class="num">'+metricLink('msg', '__all__', tot.msg)+'</td>'
+        + '<td class="num">'+metricLink('rep', '__all__', tot.rep)+'</td>'
+        + '<td class="num">'+metricLink('qual', '__all__', tot.qual)+'</td>'
+        + '<td class="num">'+pillHTML(tot.acc, tot.sent)+'</td>'
+        + '<td class="num">'+pillHTML(tot.rep, tot.msg)+'</td></tr>';
+      document.getElementById('profileTable').innerHTML = html + '</tbody></table>';
+      document.querySelectorAll('#profileTable .num-link[data-metric]').forEach(function(btn){
+        btn.onclick = function(){
+          openMetricList(btn.getAttribute('data-metric'), btn.getAttribute('data-profile'));
+        };
+      });
+    }
+
+    function metricLink(metric, profileKey, n){
+      if(!n) return fmt(n);
+      return '<button type="button" class="num-link" data-metric="'+esc(metric)+'" data-profile="'+esc(profileKey)+'">'+fmt(n)+'</button>';
+    }
+
+    var METRIC_LIST = {
+      leads: { title: 'Leads', match: countLeadRow, sortKey: function(r){ return r.date_added||''; } },
+      sent:  { title: 'Requests Sent', match: countSent, sortKey: function(r){ return r.request_sent_date||r.date_added||''; } },
+      acc:   { title: 'Accepted', match: countAcc, sortKey: function(r){ return r.accepted_date||r.date_added||''; } },
+      msg:   { title: 'Messaged', match: countMsg, sortKey: function(r){ return r.first_message_date||r.date_added||''; } },
+      rep:   { title: 'Replies', match: countRep, sortKey: function(r){ return r.first_reply_date||r.date_added||''; } },
+      qual:  { title: 'Qualified', match: countQual, sortKey: function(r){ return r.first_reply_date||r.date_added||''; } }
+    };
+
+    function openMetricList(metric, profileKey){
+      var cfg = METRIC_LIST[metric] || METRIC_LIST.leads;
+      var rows = DATA.filter(function(r){
+        if(!cfg.match(r)) return false;
+        if(profileKey === '__all__') return true;
+        return (r.profile_used || 'Unassigned') === profileKey;
+      }).slice().sort(function(a,b){
+        return String(cfg.sortKey(b)).localeCompare(String(cfg.sortKey(a)));
+      });
+      var label = profileKey === '__all__' ? 'All profiles' : profileKey;
+      openLeadList({
+        title: cfg.title + ' \u00b7 ' + label + ' (' + rows.length + ')',
+        rows: rows,
+        mode: 'qualified'
+      });
+    }
+
+    function openLeadsList(profileKey){ openMetricList('leads', profileKey); }
+    function openQualifiedList(profileKey){ openMetricList('qual', profileKey); }
+
+    function openReplyList(typeKey){
+      var rows = repliedRows().filter(function(r){
+        if(typeKey === '__all__') return true;
+        return replyType(r) === typeKey;
+      }).slice().sort(function(a,b){
+        return String(b.first_reply_date||'').localeCompare(String(a.first_reply_date||''));
+      });
+      var label = typeKey === '__all__' ? 'All types' : typeKey;
+      openLeadList({
+        title: 'Replies \u00b7 ' + label + ' (' + rows.length + ')',
+        rows: rows,
+        mode: 'replies'
+      });
+    }
+
+    function linkedInCell(url){
+      var u = String(url || '').trim();
+      if(!u) return '\u2014';
+      var href = u;
+      if(!/^https?:\/\//i.test(href)) href = 'https://' + href;
+      var label = 'View profile';
+      var m = u.match(/linkedin\.com\/in\/([^\/\?\#]+)/i);
+      if(m) label = m[1];
+      else if(/linkedin\.com\/sales\//i.test(u)) label = 'Sales Nav';
+      return '<a class="link link-li" href="'+esc(href)+'" target="_blank" rel="noopener noreferrer" title="'+esc(u)+'">'+esc(label)+'</a>';
+    }
+
+    function openLeadList(opts){
+      state.list.rows = opts.rows || [];
+      state.list.page = 0;
+      state.list.mode = opts.mode || 'qualified';
+      state.list.title = opts.title || 'Leads';
+      document.getElementById('leadModalTitle').textContent = state.list.title;
+      document.getElementById('leadModal').hidden = false;
+      renderLeadPage();
+    }
+
+    function renderLeadPage(){
+      var rows = state.list.rows;
+      var body = document.getElementById('leadListBody');
+      var pager = document.getElementById('leadPager');
+      if(!rows.length){
+        body.innerHTML = '<div class="empty">No matching leads.</div>';
+        pager.hidden = true;
+        return;
+      }
+      var pages = Math.ceil(rows.length / PAGE_SIZE);
+      if(state.list.page > pages - 1) state.list.page = pages - 1;
+      if(state.list.page < 0) state.list.page = 0;
+      var start = state.list.page * PAGE_SIZE;
+      var slice = rows.slice(start, start + PAGE_SIZE);
+      var mode = state.list.mode;
+
+      var html;
+      if(mode === 'replies'){
+        html = '<table><thead><tr>'
+          + '<th>Reply date</th><th>Prospect</th><th>LinkedIn</th><th>Company</th><th>Designation</th>'
+          + '<th>Reply type</th><th class="notes">Notes</th><th>BD</th><th>Profile</th>'
+          + '</tr></thead><tbody>';
+        slice.forEach(function(r){
+          html += '<tr>'
+            + '<td>'+(r.first_reply_date ? esc(shortD(r.first_reply_date)) : '\u2014')+'</td>'
+            + '<td>'+esc(r.prospect_name || '')+'</td>'
+            + '<td>'+linkedInCell(r.linkedin_url)+'</td>'
+            + '<td>'+esc(r.company || '')+'</td>'
+            + '<td>'+esc(r.title_designation || '')+'</td>'
+            + '<td>'+esc(replyType(r))+'</td>'
+            + '<td class="notes">'+(r.notes ? esc(r.notes) : '\u2014')+'</td>'
+            + '<td>'+esc(r.bd_name || '')+'</td>'
+            + '<td>'+esc(r.profile_used || 'Unassigned')+'</td>'
+            + '</tr>';
+        });
+      } else {
+        html = '<table><thead><tr>'
+          + '<th>Date added</th><th>Prospect</th><th>LinkedIn</th>'
+          + '<th>Company</th><th>Designation</th><th>Seniority</th><th>Employees</th>'
+          + '<th>Email</th><th>Email status</th><th>Country</th>'
+          + '<th>BD</th><th>Profile</th>'
+          + '</tr></thead><tbody>';
+        slice.forEach(function(r){
+          html += '<tr>'
+            + '<td>'+(r.date_added ? esc(shortD(r.date_added)) : '\u2014')+'</td>'
+            + '<td>'+esc(r.prospect_name || '')+'</td>'
+            + '<td>'+linkedInCell(r.linkedin_url)+'</td>'
+            + '<td>'+esc(r.company || '')+'</td>'
+            + '<td>'+esc(r.title_designation || '')+'</td>'
+            + '<td>'+esc(r.seniority_level || '')+'</td>'
+            + '<td>'+esc(r.no_of_employees || '')+'</td>'
+            + '<td>'+esc(r.email || '')+'</td>'
+            + '<td>'+esc(r.email_status || '')+'</td>'
+            + '<td>'+esc(r.country || '')+'</td>'
+            + '<td>'+esc(r.bd_name || '')+'</td>'
+            + '<td>'+esc(r.profile_used || 'Unassigned')+'</td>'
+            + '</tr>';
+        });
+      }
+      body.innerHTML = html + '</tbody></table>';
+
+      if(pages <= 1){
+        pager.hidden = true;
+      } else {
+        pager.hidden = false;
+        document.getElementById('leadPagerMeta').textContent =
+          fmt(rows.length) + ' leads \u00b7 page ' + (state.list.page + 1) + ' of ' + pages;
+        document.getElementById('leadPrev').disabled = state.list.page <= 0;
+        document.getElementById('leadNext').disabled = state.list.page >= pages - 1;
+      }
+    }
+
+    function closeLeadList(){
+      document.getElementById('leadModal').hidden = true;
+    }
+
+    function renderReplies(){
+      var replied = repliedRows();
+      var g = {};
+      replied.forEach(function(r){
+        var k = replyType(r);
+        g[k] = (g[k]||0) + 1;
+      });
+      var keys = Object.keys(g).sort(function(a,b){ return g[b]-g[a]; });
+      var html = '<table><thead><tr><th>Reply type</th><th class="num">Count</th></tr></thead><tbody>';
+      keys.forEach(function(k){
+        var cell = g[k]
+          ? '<button type="button" class="num-link" data-reply="'+esc(k)+'">'+fmt(g[k])+'</button>'
+          : fmt(g[k]);
+        html += '<tr><td>'+esc(k)+'</td><td class="num">'+cell+'</td></tr>';
+      });
+      var totCell = replied.length
+        ? '<button type="button" class="num-link" data-reply="__all__">'+fmt(replied.length)+'</button>'
+        : fmt(0);
+      html += '<tr class="total"><td>Total</td><td class="num">'+totCell+'</td></tr>';
+      document.getElementById('replyTable').innerHTML = html + '</tbody></table>';
+      document.querySelectorAll('#replyTable .num-link').forEach(function(btn){
+        btn.onclick = function(){ openReplyList(btn.getAttribute('data-reply')); };
+      });
+    }
+
+    function renderBD(){
+      var g = {};
+      DATA.forEach(function(r){
+        if(!countLeadRow(r)) return;
+        var k = r.bd_name || 'Unassigned';
+        g[k] = (g[k]||0) + 1;
+      });
+      var keys = Object.keys(g).sort(function(a,b){ return g[b]-g[a]; });
+      var html = '<table><thead><tr><th>BD</th><th class="num">Leads sourced</th></tr></thead><tbody>';
+      if(!keys.length){
+        html += '<tr><td colspan="2"><div class="note">No leads in range.</div></td></tr>';
+      } else {
+        keys.forEach(function(k){ html += '<tr><td>'+esc(k)+'</td><td class="num">'+fmt(g[k])+'</td></tr>'; });
+      }
+      document.getElementById('bdTable').innerHTML = html + '</tbody></table>';
+    }
+
+    function renderWeekly(){
+      var g = {};
+      DATA.forEach(function(r){
+        if(!countLeadRow(r) || !r.date_added) return;
+        var w = weekStart(r.date_added);
+        g[w] = (g[w]||0) + 1;
+      });
+      var keys = Object.keys(g).sort();
+      var max = Math.max.apply(null, keys.map(function(k){ return g[k]; }).concat([1]));
+      document.getElementById('weeklyBars').innerHTML = keys.map(function(k){
+        return '<div class="hbar-row"><div class="hbar-label">'+shortD(k)+'</div>'
+          + '<div class="hbar-track"><div class="hbar-fill" style="width:'+(g[k]/max*100)+'%"></div></div>'
+          + '<div class="hbar-val">'+fmt(g[k])+'</div></div>';
+      }).join('') || '<div class="note">No date_added values in range.</div>';
+    }
+
+    function renderChartControls(){
+      var m = document.getElementById('segMetric');
+      m.innerHTML =
+        '<button data-v="request" class="'+(state.metric==='request'?'on':'')+'">Request Sent</button>'
+        + '<button data-v="message" class="'+(state.metric==='message'?'on':'')+'">Messaged</button>';
+      m.querySelectorAll('button').forEach(function(b){
+        b.onclick = function(){ state.metric = b.dataset.v; renderChartControls(); renderChart(); };
+      });
+      var gEl = document.getElementById('segGran');
+      gEl.innerHTML =
+        '<button data-v="daily" class="'+(state.gran==='daily'?'on':'')+'">Daily</button>'
+        + '<button data-v="weekly" class="'+(state.gran==='weekly'?'on':'')+'">Weekly</button>';
+      gEl.querySelectorAll('button').forEach(function(b){
+        b.onclick = function(){ state.gran = b.dataset.v; renderChartControls(); renderChart(); };
+      });
+      var bds = Object.keys(state.bdOn).sort();
+      document.getElementById('bdChips').innerHTML = bds.map(function(bd, i){
+        var c = BD_COLORS[i % BD_COLORS.length];
+        return '<span class="chip'+(state.bdOn[bd]?'':' off')+'" data-bd="'+esc(bd)+'">'
+          + '<span class="dot" style="background:'+c+'"></span>'+esc(bd)+'</span>';
+      }).join('');
+      document.querySelectorAll('#bdChips .chip').forEach(function(ch){
+        ch.onclick = function(){
+          var k = ch.dataset.bd;
+          state.bdOn[k] = !state.bdOn[k];
+          renderChartControls(); renderChart();
+        };
+      });
+    }
+
+    function renderChart(){
+      var col = state.metric === 'request' ? 'request_sent_date' : 'first_message_date';
+      var bucket = state.gran === 'weekly' ? weekStart : function(s){ return s; };
+      var totals = {}, byBD = {};
+      DATA.forEach(function(r){
+        var d = r[col]; if(!inRange(d)) return;
+        var b = bucket(d);
+        totals[b] = (totals[b]||0) + 1;
+        var bd = r.bd_name || 'Unassigned';
+        if(!byBD[bd]) byBD[bd] = {};
+        byBD[bd][b] = (byBD[bd][b]||0) + 1;
+      });
+      var dates = Object.keys(totals).sort();
+      var el = document.getElementById('chart');
+      if(!dates.length){ el.innerHTML = '<div class="note">No dates for this metric in range.</div>'; return; }
+      if(state.gran === 'daily' && dates.length > 1){
+        var filled = [], d = parseD(dates[0]), endD = parseD(dates[dates.length-1]);
+        while(d <= endD){ filled.push(iso(d)); d.setDate(d.getDate()+1); }
+        dates = filled;
+      }
+      var W = Math.max(720, el.clientWidth || 720), H = 300;
+      var padL = 40, padR = 16, padT = 26, padB = 42;
+      var iw = W - padL - padR, ih = H - padT - padB;
+      var max = Math.max.apply(null, dates.map(function(dt){ return totals[dt]||0; }).concat([1]));
+      var n = dates.length;
+      var step = iw / n, bw = Math.min(step * 0.7, 38);
+      function x(i){ return padL + step*i + step/2; }
+      function y(v){ return padT + ih - (v/max)*ih; }
+      var thin = n > 20;
+      var bds = Object.keys(state.bdOn).sort();
+      var svg = '<svg width="100%" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
+      for(var gI=0; gI<=4; gI++){
+        var gy = padT + ih*gI/4, gv = Math.round(max*(4-gI)/4);
+        svg += '<line x1="'+padL+'" x2="'+(W-padR)+'" y1="'+gy+'" y2="'+gy+'" stroke="#1e2a44" stroke-width="1"/>'
+            +  '<text x="'+(padL-8)+'" y="'+(gy+4)+'" text-anchor="end" font-size="10" fill="#5d6f8f">'+gv+'</text>';
+      }
+      dates.forEach(function(dt, i){
+        var v = totals[dt]||0; if(!v) return;
+        svg += '<rect x="'+(x(i)-bw/2)+'" y="'+y(v)+'" width="'+bw+'" height="'+(padT+ih-y(v))
+          + '" fill="rgba(76,141,255,0.28)" rx="3"></rect>';
+        svg += '<text x="'+x(i)+'" y="'+(y(v)-5)+'" text-anchor="middle" font-size="'+(thin?9:11)
+          + '" fill="#8ea0bf">'+v+'</text>';
+      });
+      bds.forEach(function(bd, bi){
+        if(!state.bdOn[bd] || !byBD[bd]) return;
+        var c = BD_COLORS[bi % BD_COLORS.length];
+        var pts = dates.map(function(dt, i){ return { i:i, v: byBD[bd][dt]||0, dt:dt }; });
+        var path = pts.map(function(p, j){ return (j?'L':'M') + x(p.i) + ' ' + y(p.v); }).join(' ');
+        svg += '<path d="'+path+'" fill="none" stroke="'+c+'" stroke-width="2"/>';
+        pts.forEach(function(p){
+          if(!p.v) return;
+          svg += '<circle cx="'+x(p.i)+'" cy="'+y(p.v)+'" r="3.5" fill="'+c+'"></circle>';
+        });
+      });
+      dates.forEach(function(dt, i){
+        svg += '<rect class="hit" data-i="'+i+'" x="'+(padL + step*i)+'" y="'+padT+'" width="'+step
+          + '" height="'+ih+'" fill="transparent" style="cursor:crosshair"></rect>';
+      });
+      var every = Math.ceil(n / 14);
+      dates.forEach(function(dt, i){
+        if(i % every) return;
+        svg += '<text x="'+x(i)+'" y="'+(H-14)+'" text-anchor="middle" font-size="10" fill="#5d6f8f">'+axisD(dt)+'</text>';
+      });
+      el.innerHTML = svg + '</svg><div class="chart-tip" id="chartTip"></div>';
+      var tip = document.getElementById('chartTip');
+      var svgEl = el.querySelector('svg');
+      function showTip(i, clientX, clientY){
+        var dt = dates[i];
+        var rowsHtml = bds.filter(function(bd){ return state.bdOn[bd]; }).map(function(bd){
+          var c = BD_COLORS[Object.keys(state.bdOn).sort().indexOf(bd) % BD_COLORS.length];
+          var v = (byBD[bd] && byBD[bd][dt]) || 0;
+          return '<div class="tip-row"><span class="tip-dot" style="background:'+c+'"></span>'
+            + esc(bd)+'<span class="tip-val">'+fmt(v)+'</span></div>';
+        }).join('');
+        tip.innerHTML = '<div class="tip-date">'+longD(dt)+' · total '+fmt(totals[dt]||0)+'</div>' + rowsHtml;
+        tip.className = 'chart-tip show';
+        var rect = el.getBoundingClientRect();
+        tip.style.left = Math.min(clientX - rect.left + 12, rect.width - tip.offsetWidth - 8) + 'px';
+        tip.style.top = Math.min(clientY - rect.top + 12, rect.height - tip.offsetHeight - 8) + 'px';
+      }
+      el.querySelectorAll('rect.hit').forEach(function(hit){
+        hit.addEventListener('mousemove', function(e){ showTip(+hit.getAttribute('data-i'), e.clientX, e.clientY); });
+        hit.addEventListener('mouseenter', function(e){ showTip(+hit.getAttribute('data-i'), e.clientX, e.clientY); });
+      });
+      svgEl.addEventListener('mouseleave', function(){ tip.className = 'chart-tip'; });
+    }
+
+    // ---------- boot ----------
+    document.getElementById('refreshBtn').onclick = function(){ loadData(true); };
+    document.getElementById('dateBtn').onclick = function(e){
+      e.stopPropagation();
+      var pop = document.getElementById('datePopover');
+      if(pop.hidden) openDatePopover(); else closeDatePopover();
+    };
+    document.getElementById('dateApply').onclick = function(e){ e.stopPropagation(); applyDraftRange(); };
+    document.getElementById('dateClear').onclick = function(e){ e.stopPropagation(); clearDateRange(); };
+    document.getElementById('calPrev').onclick = function(e){
+      e.stopPropagation();
+      ensureCalView();
+      state.calView = addMonths(state.calView, -1);
+      renderCalendars();
+    };
+    document.getElementById('calNext').onclick = function(e){
+      e.stopPropagation();
+      ensureCalView();
+      state.calView = addMonths(state.calView, 1);
+      renderCalendars();
+    };
+    document.getElementById('datePopover').onclick = function(e){ e.stopPropagation(); };
+    document.addEventListener('click', function(){ closeDatePopover(); });
+    document.querySelectorAll('#tabs .tab').forEach(function(b){
+      b.onclick = function(){
+        state.tab = b.getAttribute('data-tab');
+        renderAll();
+      };
+    });
+    document.getElementById('leadModalClose').onclick = closeLeadList;
+    document.getElementById('leadModalBackdrop').onclick = closeLeadList;
+    document.getElementById('leadPrev').onclick = function(){
+      state.list.page--; renderLeadPage();
+    };
+    document.getElementById('leadNext').onclick = function(){
+      state.list.page++; renderLeadPage();
+    };
+    document.addEventListener('keydown', function(e){
+      if(e.key === 'Escape'){ closeLeadList(); closeDatePopover(); }
+    });
+    window.addEventListener('resize', function(){
+      if(DATA.length && state.tab === 'daily') renderChart();
+    });
+    updateTabVisibility();
+    updateDateBtn();
+    loadData(false);
+    </script>

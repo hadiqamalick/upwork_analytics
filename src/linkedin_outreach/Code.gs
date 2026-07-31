@@ -42,10 +42,10 @@ function getLeads() {
   var DATE_COLS = ['date_added', 'request_sent_date', 'accepted_date',
                    'first_message_date', 'first_reply_date'];
   var TEXT_COLS = ['prospect_name', 'linkedin_url', 'company', 'title_designation',
-                   'email', 'email_status', 'country', 'bd_name', 'profile_used',
-                   'status', 'reply_status', 'notes'];
+                   'seniority_level', 'no_of_employees', 'email', 'email_status',
+                   'country', 'bd_name', 'profile_used', 'reply_status', 'notes'];
 
-var tz = ss.getSpreadsheetTimeZone() || 'Etc/UTC';
+  var tz = ss.getSpreadsheetTimeZone() || 'Etc/UTC';
 
   function normDate(v) {
     if (v instanceof Date && !isNaN(v.getTime())) {
@@ -80,6 +80,14 @@ var tz = ss.getSpreadsheetTimeZone() || 'Etc/UTC';
     DATE_COLS.forEach(function (c) {
       row[c] = idx[c] != null ? normDate(raw[idx[c]]) : '';
     });
+    // Sheet uses pipeline_stage; fall back to legacy "status" header if present.
+    if (idx.pipeline_stage != null) {
+      row.status = normText(raw[idx.pipeline_stage]);
+    } else if (idx.status != null) {
+      row.status = normText(raw[idx.status]);
+    } else {
+      row.status = '';
+    }
     row.moved_to_hubspot = idx.moved_to_hubspot != null ? normBool(raw[idx.moved_to_hubspot]) : false;
     rows.push(row);
   }

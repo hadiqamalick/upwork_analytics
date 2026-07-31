@@ -11,49 +11,104 @@
 <body>
 
   <div class="topbar">
-    <div>
-      <h1>LinkedIn Outreach Dashboard</h1>
-      <div class="meta" id="meta">Loading…</div>
+    <h1>LinkedIn Outreach Dashboard</h1>
+    <div class="topbar-actions">
+      <div class="date-wrap">
+        <button type="button" class="date-btn" id="dateBtn" aria-haspopup="dialog" aria-expanded="false">All time</button>
+        <div class="date-popover" id="datePopover" hidden>
+          <div class="date-popover-body">
+            <div class="date-presets" id="datePresets"></div>
+            <div class="date-cal-panel">
+              <div class="date-cal-nav">
+                <button type="button" class="cal-nav" id="calPrev" aria-label="Previous months">&lsaquo;</button>
+                <button type="button" class="cal-nav" id="calNext" aria-label="Next months">&rsaquo;</button>
+              </div>
+              <div class="date-cals">
+                <div class="date-cal" id="calLeft"></div>
+                <div class="date-cal" id="calRight"></div>
+              </div>
+            </div>
+          </div>
+          <div class="date-popover-foot">
+            <button type="button" class="date-clear" id="dateClear">Clear</button>
+            <button type="button" class="date-apply" id="dateApply">Apply range</button>
+          </div>
+        </div>
+      </div>
+      <button type="button" class="refresh" id="refreshBtn">Refresh data</button>
     </div>
-    <button class="refresh" id="refreshBtn">Refresh data</button>
   </div>
 
-  <div class="kpis" id="kpis"></div>
+  <nav class="tabs" id="tabs">
+    <button type="button" class="tab on" data-tab="daily">Daily Activity</button>
+    <button type="button" class="tab" data-tab="cohort">Cohorted (WIP)</button>
+  </nav>
+  <p class="tab-note" id="tabNote"></p>
 
-  <div class="grid">
-    <div class="panel">
+  <div id="sectionShared">
+    <div class="kpis" id="kpis"></div>
+
+    <div class="panel panel-primary" id="panelProfiles">
       <h2>Performance by Profile</h2>
       <div id="profileTable"></div>
     </div>
+  </div>
+
+  <div id="sectionDaily">
     <div class="panel">
-      <h2>Replies by Type</h2>
-      <div id="replyTable"></div>
-      <div class="note">Not tagged = has a first reply date but reply_status is blank or "No Reply".</div>
+      <h2>BD Activity by Date</h2>
+      <div class="chart-toolbar">
+        <span class="seg" id="segMetric"></span>
+        <span class="seg" id="segGran"></span>
+      </div>
+      <div id="chart" class="chart-wrap"></div>
+      <div class="chips" id="bdChips"></div>
+    </div>
+
+    <div class="bottom-row">
+      <div class="panel" id="panelReplies">
+        <h2>Replies by Type</h2>
+        <div id="replyTable"></div>
+      </div>
+      <div class="bottom-stack">
+        <div class="panel">
+          <h2>Leads Sourced by BD</h2>
+          <div id="bdTable"></div>
+        </div>
+        <div class="panel">
+          <h2>Weekly Lead (ICP)</h2>
+          <div id="weeklyBars"></div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="grid2">
-    <div class="panel">
-      <h2>Leads Sourced by BD</h2>
-      <div id="bdTable"></div>
+  <div id="sectionCohort" hidden>
+    <div class="wip-panel">
+      <div class="wip-title">Work in Progress</div>
+      <p class="wip-sub">Cohorted analytics are under construction. Daily Activity remains available.</p>
     </div>
-    <div class="panel">
-      <h2>Weekly Lead Intake</h2>
-      <div id="weeklyBars"></div>
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>BD Activity by Date</h2>
-    <div>
-      <span class="seg" id="segMetric"></span>
-      <span class="seg" id="segGran"></span>
-    </div>
-    <div id="chart"></div>
-    <div class="chips" id="bdChips"></div>
   </div>
 
   <div id="toast"></div>
+
+  <div id="leadModal" class="modal" hidden>
+    <div class="modal-backdrop" id="leadModalBackdrop"></div>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="leadModalTitle">
+      <div class="modal-head">
+        <h2 id="leadModalTitle">Leads</h2>
+        <button type="button" class="modal-close" id="leadModalClose" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body" id="leadListBody"></div>
+      <div class="modal-pager" id="leadPager" hidden>
+        <span class="pager-meta" id="leadPagerMeta"></span>
+        <div class="pager-actions">
+          <button type="button" class="pager-prev" id="leadPrev">Previous</button>
+          <button type="button" class="pager-next" id="leadNext">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <?!= include('JavaScript'); ?>
 </body>
